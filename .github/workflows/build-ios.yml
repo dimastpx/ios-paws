@@ -1,0 +1,82 @@
+name: Build iOS 26 IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout project and large files
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Download Git LFS files
+        run: git lfs pull
+
+      - name: Check Xcode 26
+        shell: bash
+        run: |
+          set -e
+          xcodebuild -version
+          xcodebuild -version | grep -E '^Xcode 26\.'
+
+      - name: Build iOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="FiveNightsAtPaws.xcodeproj"
+
+          xcodebuild -list -project "$PROJECT"
+
+          SELECTION=$(xcodebuild -list -json -project "$PROJECT" | python3 -c 'import json,sys;p=json.load(sys.stdin)["project"];s=p.get("schemes") or [];t=p.get("targets") or [];a=s or t;print(("scheme" if s else "target")+"|"+(next((x for x in a if x=="FiveNightsAtPaws"),a[0]) if a else ""))')
+
+          KIND="${SELECTION%%|*}"
+          NAME="${SELECTION#*|}"
+
+          if [ -z "$NAME" ]; then
+            echo "No Xcode target or scheme found"
+            exit 1
+          fi
+
+          if [ "$KIND" = "scheme" ]; then
+            SELECTOR=(-scheme "$NAME" -destination "generic/platform=iOS")
+          else
+            SELECTOR=(-target "$NAME")
+          fi
+
+          xcodebuild \
+            -project "$PROJECT" \
+            "${SELECTOR[@]}" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            SYMROOT="$RUNNER_TEMP/Products" \
+            build
+
+          APP=$(find "$RUNNER_TEMP/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: Application not found"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+
+          ditto "$APP" "$RUNNER_TEMP/ipa/Payload/$(basename "$APP")"
+
+          cd "$RUNNER_TEMP/ipa"
+
+          zip -qry "$GITHUB_WORKSPACE/FiveNightsAtPaws-unsigned.ipa" Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FiveNightsAtPaws-iOS26
+          path: FiveNightsAtPaws-unsigned.ipa
+          if-no-files-found: error
